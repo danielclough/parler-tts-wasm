@@ -44,56 +44,30 @@
         <h3>Text to Speech</h3>
         <textarea id="textInput" placeholder="Enter text to convert to speech...">Hey, how are you doing today?</textarea>
         <br>
-        <textarea id="descriptionInput" placeholder="Voice description...">A clear, natural female voice with moderate pace and good quality.</textarea>
+        <textarea id="descriptionInput" placeholder="Voice description...">A female speaker delivers a slightly expressive and animated speech with a moderate speed and pitch. The recording is of very high quality, with the speaker's voice sounding clear and very close up.</textarea>
         <br>
-        <button id="generateBtn">Generate Speech</button>
-    </div>
 
-    <div class="controls">
-        <h3>Audio Recording</h3>
-        <button id="recordBtn">Start Recording</button>
-        <button id="stopBtn" disabled>Stop Recording</button>
-        <p><small>Note: Recording feature requires microphone permissions</small></p>
+        <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 15px; margin: 15px 0;">
+            <div>
+                <label for="temperatureInput">Temperature:</label>
+                <input type="number" id="temperatureInput" value="0.7" step="0.1" min="0" max="2" style="width: 100%; padding: 5px;">
+            </div>
+            <div>
+                <label for="seedInput">Seed:</label>
+                <input type="number" id="seedInput" value="0" min="0" style="width: 100%; padding: 5px;">
+            </div>
+            <div>
+                <label for="topPInput">Top P:</label>
+                <input type="number" id="topPInput" value="0.9" step="0.1" min="0" max="1" style="width: 100%; padding: 5px;">
+            </div>
+        </div>
+
+        <button id="generateBtn">Generate Speech</button>
     </div>
 
     <div id="status">Ready</div>
 
     <script type="module">
-    console.log('Script starting...');
-    
-    // Add debugging for WASM loading
-    let recorder;
-    let wasmLoaded = false;
-
-    async function initWasm() {
-        try {
-            console.log('Starting WASM initialization...');
-            
-            // Check if the WASM files exist
-            const wasmResponse = await fetch('./pkg/ttser_bg.wasm');
-            console.log('WASM file response:', wasmResponse.status);
-            
-            const jsResponse = await fetch('./pkg/ttser.js');
-            console.log('JS file response:', jsResponse.status);
-            
-            // Try to import the module
-            const { default: init, AudioRecorder } = await import('./pkg/ttser.js');
-            console.log('Module imported successfully');
-            
-            await init();
-            console.log('WASM init completed');
-            
-            recorder = new AudioRecorder();
-            console.log('AudioRecorder created');
-            
-            wasmLoaded = true;
-            document.getElementById('status').textContent = 'WASM initialized successfully';
-        } catch (error) {
-            console.error('WASM initialization failed:', error);
-            document.getElementById('status').textContent = 'WASM failed: ' + error.message;
-            wasmLoaded = false;
-        }
-    }
 
     // Add debugging to the generate button
     document.getElementById('generateBtn').addEventListener('click', async (event) => {
@@ -101,9 +75,15 @@
         
         const text = document.getElementById('textInput').value;
         const description = document.getElementById('descriptionInput').value;
-        
+        const temperature = document.getElementById('temperatureInput').value;
+        const seed = document.getElementById('seedInput').value;
+        const topP = document.getElementById('topPInput').value;
+
         console.log('Text:', text);
         console.log('Description:', description);
+        console.log('Temperature:', temperature);
+        console.log('Seed:', seed);
+        console.log('Top P:', topP);
         
         if (!text.trim()) {
             console.log('No text provided');
@@ -123,6 +103,9 @@
             const formData = new FormData();
             formData.append('text', text);
             formData.append('description', description);
+            formData.append('temperature', temperature);
+            formData.append('seed', seed);
+            formData.append('top_p', topP);
             
             console.log('FormData created, making request...');
 
@@ -169,8 +152,6 @@
         }
     });
 
-    // Initialize WASM (but don't block the button)
-    initWasm();
 </script>
 
 </body>

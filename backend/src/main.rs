@@ -1,3 +1,9 @@
+#[cfg(feature = "mkl")]
+extern crate intel_mkl_src;
+
+#[cfg(feature = "accelerate")]
+extern crate accelerate_src;
+
 use axum::{
     extract::Multipart,
     http::{header, StatusCode},
@@ -6,23 +12,20 @@ use axum::{
     Router,
 };
 use serde_json;
-use candle::{DType, Device, IndexOp, Tensor};
+use candle::{DType, Device, Error, IndexOp, Tensor};
 use candle_nn::VarBuilder;
 use candle_transformers::models::parler_tts::{Config, Model};
 use std::sync::Arc;
 use tokenizers::Tokenizer;
 use tower_http::{
-    cors::CorsLayer, 
+    cors::CorsLayer,
     services::ServeDir
 };
+use std::path::Path;
 use tracing_subscriber::fmt::init as tracing_init;
+use anyhow::Error as E;
 
-#[derive(Clone)]
-struct AppState {
-    model: Arc<Model>,
-    tokenizer: Arc<Tokenizer>,
-    config: Arc<Config>,
-}
+
 async fn debug_endpoint() -> &'static str {
     println!("Debug endpoint hit!");
     "Debug endpoint working"
@@ -31,17 +34,14 @@ async fn debug_endpoint() -> &'static str {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let bind = "0.0.0.0:8039";
+
     tracing_init();
 
-    // Initialize Parler-TTS model
-    let state = initialize_model().await?;
-
-    
 let api_routes = Router::new()
     .route("/tts", post(generate_tts))
     .route("/health", get(health_check))
-    .route("/debug", get(debug_endpoint))
-    .with_state(state);
+    .route("/debug", get(debug_endpoint));
 
 
     let app = Router::new()
@@ -60,8 +60,8 @@ let api_routes = Router::new()
         ))
         .layer(CorsLayer::permissive());
 
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await?;
-    println!("Server running on http://localhost:3000");
+    let listener = tokio::net::TcpListener::bind(bind).await?;
+    println!("Server running on http://{}", bind);
     println!("Serving static files from: ./public/");
     
     axum::serve(listener, app).await?;
@@ -69,98 +69,19 @@ let api_routes = Router::new()
     Ok(())
 }
 
-async fn initialize_model() -> anyhow::Result<AppState> {
-    println!("Loading Parler-TTS model...");
-    
-    let api = candle_hf_hub::api::tokio::Api::new()?;
-    let model_id = "parler-tts/parler-tts-mini-v1";  // Use v1 instead of v1.1
-    let repo = api.repo(candle_hf_hub::Repo::new(model_id.to_string(), candle_hf_hub::RepoType::Model));
-    
-    let model_file = repo.get("model.safetensors").await?;
-    let config_file = repo.get("config.json").await?;
-    
-    let device = Device::Cpu;
-    
-    // Load and modify config to add missing fields
-    let mut config: serde_json::Value = serde_json::from_reader(std::fs::File::open(&config_file)?)?;
-    
-    // Add missing num_codebooks field if it doesn't exist
-    if let Some(audio_encoder) = config.get_mut("audio_encoder") {
-        if !audio_encoder.as_object().unwrap().contains_key("num_codebooks") {
-            audio_encoder.as_object_mut().unwrap().insert("num_codebooks".to_string(), serde_json::json!(4));
-        }
-    }
-    
-    // Convert back to Config struct
-    let config: Config = serde_json::from_value(config)?;
-    
-    // Simple fallback tokenizer since tokenizer.json has compatibility issues
-    let tokenizer = create_fallback_tokenizer()?;
-    
-    let vb = unsafe { 
-        VarBuilder::from_mmaped_safetensors(&[model_file], DType::F32, &device)? 
-    };
-    let model = Model::new(&config, vb)?;
 
-    println!("Model loaded successfully!");
-
-    Ok(AppState {
-        model: Arc::new(model),
-        tokenizer: Arc::new(tokenizer),
-        config: Arc::new(config),
-    })
+async fn health_check() -> &'static str {
+    "OK"
 }
 
-async fn load_tokenizer(repo: &candle_hf_hub::api::tokio::ApiRepo) -> anyhow::Result<Tokenizer> {
-    // Try to load tokenizer.json first
-    match repo.get("tokenizer.json").await {
-        Ok(tokenizer_file) => {
-            match Tokenizer::from_file(tokenizer_file) {
-                Ok(tokenizer) => Ok(tokenizer),
-                Err(e) => {
-                    anyhow::bail!("Failed to load tokenizer from file: {}", e);
-                }
-            }
-        }
-        Err(e) => {
-            anyhow::bail!("Failed to download tokenizer file: {}", e);
-        }
-    }
-}
-
-fn create_fallback_tokenizer() -> anyhow::Result<Tokenizer> {
-    use tokenizers::{
-        models::bpe::BPE, 
-        pre_tokenizers::whitespace::Whitespace, 
-        AddedToken, Tokenizer
-    };
-    
-    println!("Creating simple fallback tokenizer...");
-    
-    // Create a simple BPE tokenizer as fallback
-    let mut tokenizer = Tokenizer::new(BPE::default());
-    tokenizer.with_pre_tokenizer(Whitespace {});
-    
-    // Add basic special tokens
-    let special_tokens = vec![
-        AddedToken::from("[UNK]", true),
-        AddedToken::from("[PAD]", true),
-        AddedToken::from("[CLS]", true),
-        AddedToken::from("[SEP]", true),
-    ];
-    
-    tokenizer.add_special_tokens(&special_tokens);
-    
-    Ok(tokenizer)
-}
-
-async fn generate_tts(
-    axum::extract::State(state): axum::extract::State<AppState>,
-    mut multipart: Multipart,
-) -> Result<Response, StatusCode> {
+async fn generate_tts(mut multipart: Multipart) -> Result<Response, StatusCode> {
     let mut text = String::new();
     let mut description = String::new();
+    let mut temperature: Option<f64> = None;
+    let mut seed: Option<u64> = None;
+    let mut top_p: Option<f64> = None;
 
+    // Extract form data
     while let Some(field) = multipart.next_field().await.map_err(|_| StatusCode::BAD_REQUEST)? {
         let name = field.name().unwrap_or("").to_string();
         let data = field.text().await.map_err(|_| StatusCode::BAD_REQUEST)?;
@@ -168,118 +89,179 @@ async fn generate_tts(
         match name.as_str() {
             "text" => text = data,
             "description" => description = data,
+            "temperature" => temperature = data.parse().ok(),
+            "seed" => seed = data.parse().ok(),
+            "top_p" => top_p = data.parse().ok(),
             _ => {}
         }
     }
 
-    if text.is_empty() {
+    if text.is_empty() || description.is_empty() {
         return Err(StatusCode::BAD_REQUEST);
     }
 
-    if description.is_empty() {
-        description = "A clear, natural speaking voice with moderate pace and good quality.".to_string();
-    }
+    // Generate unique filename
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let filename = format!("generated_audio_{}.wav", timestamp);
+    let filepath = format!("./public/audio/{}", filename);
 
-    println!("Generating TTS for: '{}'", text);
+    // Ensure audio directory exists
+    std::fs::create_dir_all("./public/audio").map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    // Generate TTS
-    match generate_speech_simple(&state, &text, &description).await {
-        Ok(audio_data) => {
-            let response = Response::builder()
-                .header(header::CONTENT_TYPE, "audio/wav")
-                .header(header::CONTENT_DISPOSITION, "attachment; filename=\"speech.wav\"")
-                .body(audio_data.into())
-                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-            
-            Ok(response)
-        }
-        Err(e) => {
-            eprintln!("TTS generation error: {}", e);
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
-        }
-    }
-}
-
-// Simplified speech generation that doesn't rely heavily on tokenizer
-async fn generate_speech_simple(
-    state: &AppState,
-    text: &str,
-    description: &str,
-) -> anyhow::Result<Vec<u8>> {
-    let device = Device::Cpu;
-    
-    // Use simple encoding approach
-    let description_tokens = simple_tokenize(description);
-    let description_tokens = Tensor::new(description_tokens, &device)?.unsqueeze(0)?;
-
-    let prompt_tokens = simple_tokenize(text);
-    let prompt_tokens = Tensor::new(prompt_tokens, &device)?.unsqueeze(0)?;
-
-    // Generate speech with simplified approach
-    let lp = candle_transformers::generation::LogitsProcessor::new(42, Some(0.0), None);
-    
-    let mut model = (*state.model).clone();
-    let codes = model.generate(&prompt_tokens, &description_tokens, lp, 300)?;
-    
-    let codes = codes.to_dtype(DType::I64)?.unsqueeze(0)?;
-    let pcm = model.audio_encoder.decode_codes(&codes)?;
-    let pcm = pcm.i((0, 0))?;
-    
-    let pcm_data = pcm.to_vec1::<f32>()?;
-    let normalized_pcm = normalize_audio(&pcm_data);
-    
-    let wav_data = create_wav_data(&normalized_pcm, state.config.audio_encoder.sampling_rate as u32)?;
-    
-    Ok(wav_data)
-}
-
-// Simple tokenization fallback
-fn simple_tokenize(text: &str) -> Vec<u32> {
-    // Very simple character-based tokenization as fallback
-    text.chars()
-        .map(|c| c as u32 % 1000) // Simple mapping to keep values reasonable
-        .collect()
-}
-
-fn normalize_audio(samples: &[f32]) -> Vec<f32> {
-    if samples.is_empty() {
-        return samples.to_vec();
-    }
-
-    let max_abs = samples.iter()
-        .map(|&x| x.abs())
-        .fold(0.0f32, f32::max);
-
-    if max_abs == 0.0 {
-        return samples.to_vec();
-    }
-
-    let scale = 0.7 / max_abs;
-    samples.iter().map(|&x| x * scale).collect()
-}
-
-fn create_wav_data(samples: &[f32], sample_rate: u32) -> anyhow::Result<Vec<u8>> {
-    let mut wav_data = Vec::new();
-    
-    let cursor = std::io::Cursor::new(&mut wav_data);
-    let spec = hound::WavSpec {
-        channels: 1,
-        sample_rate,
-        bits_per_sample: 16,
-        sample_format: hound::SampleFormat::Int,
+    // Create WAV file
+    let create_wav_args = CreateWavArgs {
+        description,
+        prompt: text,
+        out_file: filepath.clone(),
+        temperature,
+        seed,
+        top_p,
     };
-    
-    let mut writer = hound::WavWriter::new(cursor, spec)?;
-    
-    for &sample in samples {
-        let sample_i16 = (sample.clamp(-1.0, 1.0) * i16::MAX as f32) as i16;
-        writer.write_sample(sample_i16)?;
+    println!("{:?}",create_wav_args);
+
+    if let Err(_) = create_wav_file(create_wav_args) {
+        return Err(StatusCode::INTERNAL_SERVER_ERROR);
     }
-    
-    writer.finalize()?;
-    Ok(wav_data)
+
+    // Read the generated file and return it
+    let audio_data = std::fs::read(&filepath).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    Ok(Response::builder()
+        .status(200)
+        .header(header::CONTENT_TYPE, "audio/wav")
+        .header(header::CONTENT_DISPOSITION, format!("attachment; filename=\"{}\"", filename))
+        .body(axum::body::Body::from(audio_data))
+        .unwrap())
 }
 
-async fn health_check() -> &'static str {
-    "OK"
+#[derive(Debug)]
+struct CreateWavArgs {
+    description: String,
+    prompt: String,
+    out_file: String,
+    temperature: Option<f64>,
+    seed: Option<u64>,
+    top_p: Option<f64>,
+}
+
+fn create_wav_file(create_wav_args: CreateWavArgs) -> anyhow::Result<()> {
+    let description: String = create_wav_args.description;
+    let prompt: String = create_wav_args.prompt;
+    let out_file: String = create_wav_args.out_file;
+    let temperature: f64 = create_wav_args.temperature.unwrap_or(0.0);
+    let seed: u64 = create_wav_args.seed.unwrap_or(0);
+    let top_p: Option<f64> = create_wav_args.top_p;
+    let max_steps:usize = 512;
+
+    let start = std::time::Instant::now();
+    let api = hf_hub::api::sync::Api::new()?;
+
+    let repo = api.repo(hf_hub::Repo::with_revision(
+        "parler-tts/parler-tts-large-v1".to_string(),
+        hf_hub::RepoType::Model,
+        "main".to_string(),
+    ));
+    let model_files = hub_load_safetensors(&repo, "model.safetensors.index.json")?;
+    let config = repo.get("config.json")?;
+    let tokenizer = repo.get("tokenizer.json")?;
+    println!("retrieved the files in {:?}", start.elapsed());
+    
+    let start = std::time::Instant::now();
+    let tokenizer = Tokenizer::from_file(tokenizer).unwrap();
+    // let tokenizer = Tokenizer::from_file(tokenizer).map_err(E::msg)?;
+    println!("tokenizer loaded in {:?}", start.elapsed());
+    
+    let start = std::time::Instant::now();
+    let device = candle_examples::device(false)?;
+    println!("device loaded in {:?}", start.elapsed());
+    
+    let start = std::time::Instant::now();
+    let vb = unsafe { VarBuilder::from_mmaped_safetensors(&model_files, DType::F32, &device)? };
+    let config: Config = serde_json::from_reader(std::fs::File::open(config)?)?;
+    println!("config loaded in {:?}", start.elapsed());
+
+    let start = std::time::Instant::now();
+    let mut model = Model::new(&config, vb)?;
+    println!("loaded the model in {:?}", start.elapsed());
+
+    // Debug: Print actual input strings and their lengths
+    println!("DEBUG - Input prompt: '{}'", prompt);
+    println!("DEBUG - Input description: '{}'", description);
+
+    let description_token_ids = tokenizer
+        .encode(description, true)
+        .map_err(E::msg)?
+        .get_ids()
+        .to_vec();
+    println!("DEBUG - Description tokens: {} tokens", description_token_ids.len());
+    let description_tokens = Tensor::new(description_token_ids, &device)?.unsqueeze(0)?;
+
+    let prompt_token_ids = tokenizer
+        .encode(prompt, true)
+        .map_err(E::msg)?
+        .get_ids()
+        .to_vec();
+    println!("DEBUG - Prompt tokens: {} tokens", prompt_token_ids.len());
+    let prompt_tokens = Tensor::new(prompt_token_ids, &device)?.unsqueeze(0)?;
+    let lp = candle_transformers::generation::LogitsProcessor::new(
+        seed,
+        Some(temperature),
+        top_p,
+    );
+    
+    println!("&prompt_tokens, &description_tokens, max_steps\n{:?}\n",(&prompt_tokens, &description_tokens, max_steps));
+    println!("starting generation...\n");
+    
+    let codes = model.generate(&prompt_tokens, &description_tokens, lp, max_steps)?;
+    println!("generated codes\n{codes}\n");
+
+    let codes = codes.to_dtype(DType::I64)?;
+    codes.save_safetensors("codes", "out.safetensors")?;
+    let codes = codes.unsqueeze(0)?;
+    let pcm = model
+        .audio_encoder
+        .decode_codes(&codes.to_device(&device)?)?;
+    println!("pcm: {pcm}");
+    
+    let pcm = pcm.i((0, 0))?;
+    let pcm = candle_examples::audio::normalize_loudness(&pcm, 24_000, true)?;
+    let pcm = pcm.to_vec1::<f32>()?;
+
+    // Write WAV file using candle_examples method
+    let mut output = std::fs::File::create(&out_file)?;
+    candle_examples::wav::write_pcm_as_wav(&mut output, &pcm, config.audio_encoder.sampling_rate)?;
+
+    println!("Generated audio saved to: {}", out_file);
+    Ok(())
+}
+
+
+/// Loads the safetensors files for a model from the hub based on a json index file.
+pub fn hub_load_safetensors(
+    repo: &hf_hub::api::sync::ApiRepo,
+    json_file: &str,
+) -> Result<Vec<std::path::PathBuf>, Error> {
+    let json_file = repo.get(json_file).map_err(candle::Error::wrap)?;
+    let json_file = std::fs::File::open(json_file)?;
+    let json: serde_json::Value =
+        serde_json::from_reader(&json_file).map_err(candle::Error::wrap)?;
+    let weight_map = match json.get("weight_map") {
+        None => candle::bail!("no weight map in {json_file:?}"),
+        Some(serde_json::Value::Object(map)) => map,
+        Some(_) => candle::bail!("weight map in {json_file:?} is not a map"),
+    };
+    let mut safetensors_files = std::collections::HashSet::new();
+    for value in weight_map.values() {
+        if let Some(file) = value.as_str() {
+            safetensors_files.insert(file.to_string());
+        }
+    }
+    let safetensors_files = safetensors_files
+        .iter()
+        .map(|v| repo.get(v).map_err(candle::Error::wrap))
+        .collect::<Result<Vec<_>, candle::Error>>()?;
+    Ok(safetensors_files)
 }

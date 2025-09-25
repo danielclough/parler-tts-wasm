@@ -1,0 +1,12 @@
+.*
+!.gitignore
+!.github
+
+*.md
+!README.md
+
+*.wav
+
+target/
+pkg/
+node_modules/

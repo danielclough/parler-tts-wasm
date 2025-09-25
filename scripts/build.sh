@@ -13,4 +13,4 @@ wasm-pack build --target web --out-dir ./public/pkg --release
 echo "WASM build complete!"
 echo "Files generated in public/pkg/"
 
-echo "Start server with: cd backend && cargo run"
+echo "Start server with: \`cd backend && cargo run --release\` or \`scripts/start.sh\`"
