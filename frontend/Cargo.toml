@@ -1,0 +1,43 @@
+[package]
+name = "ttser"
+version = "0.1.0"
+edition = "2024"
+
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+
+[dependencies.web-sys]
+version = "0.3"
+features = [
+  "console",
+  "MediaDevices",
+  "MediaStream",
+  "MediaStreamConstraints", 
+  "MediaRecorder",
+  "MediaRecorderOptions",
+  "BlobEvent",
+  "Navigator",
+  "Window",
+  "Document",
+  "Element",
+  "HtmlElement",
+  "HtmlAudioElement",
+  "Blob",
+  "File",
+  "FileReader",
+  "FormData",
+  "Request",
+  "RequestInit",
+  "Response",
+  "Url",
+  "BlobPropertyBag",
+]
+
+[dependencies.wasm-bindgen]
+version = "0.2"
+features = ["serde-serialize"]

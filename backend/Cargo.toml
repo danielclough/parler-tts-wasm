@@ -1,0 +1,34 @@
+[package]
+name = "ttser-backend"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+axum = { version = "0.8", features = ["multipart"] }
+tokio = { version = "1.0", features = ["full"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors", "fs"] }
+
+# Use git versions for latest candle with examples
+candle = { git = "https://github.com/huggingface/candle.git", package = "candle-core" }
+candle-nn = { git = "https://github.com/huggingface/candle.git" }
+candle-transformers = { git = "https://github.com/huggingface/candle.git" }
+candle-examples = { git = "https://github.com/huggingface/candle.git" }
+
+# Other dependencies
+tokenizers = "0.15"
+candle-hf-hub = "0.3"
+anyhow = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt"] }
+hound = "3.5.1"
+
+# Optional: For different acceleration backends
+[features]
+default = []
+accelerate = ["candle/accelerate"]
+mkl = ["candle/mkl"]
+cuda = ["candle/cuda"]
+cudnn = ["candle/cudnn"]

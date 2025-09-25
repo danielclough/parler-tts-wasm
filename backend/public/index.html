@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>TTS Demo</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .controls {
+            margin: 20px 0;
+        }
+        button {
+            padding: 10px 20px;
+            margin: 5px;
+            font-size: 16px;
+        }
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        textarea {
+            width: 100%;
+            height: 100px;
+            margin: 10px 0;
+            padding: 10px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+        }
+        #status {
+            margin: 10px 0;
+            padding: 10px;
+            background-color: #f0f0f0;
+            border-radius: 5px;
+        }
+    </style>
+</head>
+<body>
+    <h1>Parler-TTS WASM Demo</h1>
+    
+    <div class="controls">
+        <h3>Text to Speech</h3>
+        <textarea id="textInput" placeholder="Enter text to convert to speech...">Hey, how are you doing today?</textarea>
+        <br>
+        <textarea id="descriptionInput" placeholder="Voice description...">A clear, natural female voice with moderate pace and good quality.</textarea>
+        <br>
+        <button id="generateBtn">Generate Speech</button>
+    </div>
+
+    <div class="controls">
+        <h3>Audio Recording</h3>
+        <button id="recordBtn">Start Recording</button>
+        <button id="stopBtn" disabled>Stop Recording</button>
+        <p><small>Note: Recording feature requires microphone permissions</small></p>
+    </div>
+
+    <div id="status">Ready</div>
+
+    <script type="module">
+    console.log('Script starting...');
+    
+    // Add debugging for WASM loading
+    let recorder;
+    let wasmLoaded = false;
+
+    async function initWasm() {
+        try {
+            console.log('Starting WASM initialization...');
+            
+            // Check if the WASM files exist
+            const wasmResponse = await fetch('./pkg/ttser_bg.wasm');
+            console.log('WASM file response:', wasmResponse.status);
+            
+            const jsResponse = await fetch('./pkg/ttser.js');
+            console.log('JS file response:', jsResponse.status);
+            
+            // Try to import the module
+            const { default: init, AudioRecorder } = await import('./pkg/ttser.js');
+            console.log('Module imported successfully');
+            
+            await init();
+            console.log('WASM init completed');
+            
+            recorder = new AudioRecorder();
+            console.log('AudioRecorder created');
+            
+            wasmLoaded = true;
+            document.getElementById('status').textContent = 'WASM initialized successfully';
+        } catch (error) {
+            console.error('WASM initialization failed:', error);
+            document.getElementById('status').textContent = 'WASM failed: ' + error.message;
+            wasmLoaded = false;
+        }
+    }
+
+    // Add debugging to the generate button
+    document.getElementById('generateBtn').addEventListener('click', async (event) => {
+        console.log('Generate button clicked');
+        
+        const text = document.getElementById('textInput').value;
+        const description = document.getElementById('descriptionInput').value;
+        
+        console.log('Text:', text);
+        console.log('Description:', description);
+        
+        if (!text.trim()) {
+            console.log('No text provided');
+            alert('Please enter some text');
+            return;
+        }
+
+        const generateBtn = document.getElementById('generateBtn');
+        generateBtn.disabled = true;
+        generateBtn.textContent = 'Generating...';
+        document.getElementById('status').textContent = 'Generating speech...';
+        
+        try {
+            console.log('Starting TTS generation...');
+            
+            // Always use direct API call for debugging
+            const formData = new FormData();
+            formData.append('text', text);
+            formData.append('description', description);
+            
+            console.log('FormData created, making request...');
+
+            const response = await fetch('/api/tts', {
+                method: 'POST',
+                body: formData
+            });
+
+            console.log('Response received:', response.status, response.statusText);
+            console.log('Response headers:', [...response.headers.entries()]);
+
+            if (response.ok) {
+                console.log('Response OK, getting blob...');
+                const audioBlob = await response.blob();
+                console.log('Blob size:', audioBlob.size, 'Type:', audioBlob.type);
+                
+                const audioUrl = URL.createObjectURL(audioBlob);
+                console.log('Audio URL created:', audioUrl);
+                
+                const audio = new Audio(audioUrl);
+                
+                audio.addEventListener('loadeddata', () => {
+                    console.log('Audio loaded successfully');
+                });
+                
+                audio.addEventListener('error', (e) => {
+                    console.error('Audio playback error:', e);
+                });
+                
+                await audio.play();
+                console.log('Audio play initiated');
+                document.getElementById('status').textContent = 'Speech generated and playing!';
+            } else {
+                const errorText = await response.text();
+                console.error('Server error:', response.status, errorText);
+                throw new Error(`HTTP ${response.status}: ${response.statusText} - ${errorText}`);
+            }
+        } catch (error) {
+            console.error('Full error details:', error);
+            document.getElementById('status').textContent = 'Error: ' + error.message;
+        } finally {
+            generateBtn.disabled = false;
+            generateBtn.textContent = 'Generate Speech';
+        }
+    });
+
+    // Initialize WASM (but don't block the button)
+    initWasm();
+</script>
+
+</body>
+</html>
